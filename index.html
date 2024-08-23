@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gravador de Áudio</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+    <style>
+        /* Estilos básicos para visualização e layout */
+        .hidden {
+            display: none;
+        }
+        .blinking {
+            animation: blinking 1s infinite;
+        }
+        @keyframes blinking {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        .mb-3 {
+            margin-bottom: 1rem;
+        }
+        .box-audio {
+            display: flex;
+            align-items: center;
+        }
+        #waveform, #animationPreview {
+            width: 100%;
+            height: 100px;
+        }
+        button {
+            cursor: pointer;
+        }
+        .input-group {
+            display: flex;
+        }
+        textarea {
+            flex: 1;
+        }
+        .form-control {
+            width: 100%;
+            padding: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+
+<div class="mb-3">
+    <label class="form-label required" for="demand">Necessidade do Cliente</label>
+
+    <div class="input-group mb-3">
+        <textarea cols="30" rows="2" type="text" class="form-control"
+            placeholder="Qual a necessidade do cliente?" aria-label="Qual a necessidade do cliente?"
+            aria-describedby="addon-wrapping" id="demand" name="demand"></textarea>
+
+        <button class="btn btn-outline-secondary" id="BotaoGravar" type="button"
+            onclick="GravarAudio(); return false;"><i class="fas fa-microphone"></i></button>
+
+        <button class="btn btn-outline-secondary hidden" id="BotaoParar" type="button"
+            onclick="PararAudio(); return false;"><i class="fas fa-stop"></i></button>
+    </div>
+
+    <div id="recordingTime" class="hidden">00:00</div>
+
+    <div id="recordingAnimation" class="hidden">
+        <i id="microphoneIcon" class="fas fa-microphone"></i>
+        <canvas id="animationPreview"></canvas>
+    </div>
+
+    <div id="audiopreview" class="mb-3 hidden">
+        <div class="box-audio">
+            <button id="play-pause">
+                <i id="playPauseIcon" class="fas fa-play"></i>
+            </button>
+
+            <canvas id="waveform"></canvas>
+
+            <audio id="audio" preload="metadata" controls class="hidden">
+                <source id="audio-source" type="audio/wav">
+            </audio>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/recorderjs/0.1.0/recorder.js"></script>
+<script>
+    let audioContext, recorder, animationFrameId;
+    let isRecording = false;
+    let recordingStartTime, recordingInterval;
+    let audioChunks = [];
+    let peaksRe = [];
+    let isPlayingRe = false;
+    let rafIdRe = null;
+    let audioDurationRe = 0;
+
+    // Elementos DOM
+    const AudioPreview = document.querySelector('#audiopreview');
+    const BotaoGravar = document.querySelector('button#BotaoGravar');
+    const BotaoParar = document.querySelector('button#BotaoParar');
+    const recordingTime = document.getElementById('recordingTime');
+    const micIcon = document.getElementById('microphoneIcon');
+    const canvas = document.getElementById('animationPreview');
+    const canvasCtx = canvas.getContext('2d');
+
+    // Canvas settings
+    const columnWidth = 5;
+    const spaceBetweenColumns = 5;
+    const totalColumns = Math.floor(canvas.width / (columnWidth + spaceBetweenColumns));
+    const verticalAmplification = 1.5;
+    const barColor = 'rgb(245, 147, 5)';
+    let history = new Array(totalColumns).fill(0);
+
+    function updateRecordingTime() {
+        const elapsedSeconds = Math.floor((Date.now() - recordingStartTime) / 1000);
+        const minutes = String(Math.floor(elapsedSeconds / 60)).padStart(2, '0');
+        const seconds = String(elapsedSeconds % 60).padStart(2, '0');
+        recordingTime.textContent = `${minutes}:${seconds}`;
+    }
+
+    function processAudio(bufferLength, dataArray) {
+        const average = dataArray.reduce((sum, value) => sum + value, 0) / bufferLength;
+        const normalizedHeight = (average / 255) * canvas.height * verticalAmplification;
+
+        history.push(normalizedHeight);
+        history.shift();
+        drawWaveform(); // Desenha a forma de onda
+    }
+
+    function drawWaveform() {
+        canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+
+        history.forEach((height, i) => {
+            const x = i * (columnWidth + spaceBetweenColumns);
+            const y = (canvas.height / 2) - (height / 2); // Centralizar verticalmente
+            canvasCtx.fillStyle = barColor;
+            canvasCtx.fillRect(x, y, columnWidth, height);
+        });
+
+        animationFrameId = requestAnimationFrame(drawWaveform);
+    }
+
+    function GravarAudio() {
+        if (isRecording) return;
+
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+        navigator.mediaDevices.getUserMedia({ audio: true })
+            .then(function (stream) {
+                const input = audioContext.createMediaStreamSource(stream);
+                recorder = new Recorder(input, { numChannels: 1 });
+
+                // Analyser setup
+                const analyser = audioContext.createAnalyser();
+                analyser.fftSize = 256;
+                const bufferLength = analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+
+                input.connect(analyser);
+
+                // Inicia a gravação
+                recorder.record();
+                isRecording = true;
+
+                // Controle de Botões
+                BotaoGravar.classList.add('hidden');
+                BotaoParar.classList.remove('hidden');
+                recordingStartTime = Date.now();
+                recordingInterval = setInterval(updateRecordingTime, 1000);
+                recordingTime.classList.remove('hidden');
+
+                // Animação de gravação
+                function animate() {
+                    requestAnimationFrame(animate);
+                    analyser.getByteFrequencyData(dataArray);
+                    processAudio(bufferLength, dataArray);
+                }
+                animate();
+            })
+            .catch(function (err) {
+                console.log(err);
+                alert('Erro ao acessar o microfone');
+            });
+    }
+
+    function PararAudio() {
+        if (!isRecording) return;
+
+        // Para a gravação
+        recorder.stop();
+        clearInterval(recordingInterval);
+        recordingTime.classList.add('hidden');
+
+        recorder.exportWAV(function (blob) {
+            const LinkAudio = URL.createObjectURL(blob);
+            const sourceElement = document.getElementById('audio-source');
+            sourceElement.setAttribute('src', LinkAudio);
+            sourceElement.setAttribute('type', 'audio/wav');
+
+            const Reprodutor = document.getElementById('audio');
+            Reprodutor.load();
+            AudioPreview.classList.remove('hidden');
+
+            // Parar animação
+            cancelAnimationFrame(animationFrameId);
+            clearVisualization();
+
+            BotaoGravar.classList.remove('hidden');
+            BotaoParar.classList.add('hidden');
+            isRecording = false;
+        });
+    }
+
+    function clearVisualization() {
+        canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+        history = new Array(totalColumns).fill(0);
+    }
+
+    //=== Reprodução do Audio #
+    const canvasRe = document.getElementById('waveform');
+    const ctxRe = canvasRe.getContext('2d');
+    const audioRe = document.getElementById('audio');
+    const playPauseBtnRe = document.getElementById('play-pause');
+    const playPauseBtnIconRe = document.getElementById('playPauseIcon');
+    const audioSourceRe = document.getElementById('audio-source');
+
+    const columnWidthRe = 4, spaceBetweenColumnsRe = 3, totalColumnsRe = Math.floor(canvasRe.width / (columnWidthRe + spaceBetweenColumnsRe)), verticalAmplificationRe = 1.5, barColorRe = 'rgb(245, 147, 5)';
+    let historyRe = new Array(totalColumnsRe).fill(0);
+
+    audioRe.onloadedmetadata = function () {
+        audioDurationRe = audioRe.duration;
+        if (rafIdRe) {
+            cancelAnimationFrame(rafIdRe);
+        }
+        rafIdRe = requestAnimationFrame(drawWaveformRe);
+    };
+
+    playPauseBtnRe.addEventListener('click', () => {
+        if (audioRe.paused) {
+            audioRe.play();
+            playPauseBtnIconRe.className = 'fas fa-pause';
+            isPlayingRe = true;
+            rafIdRe = requestAnimationFrame(drawWaveformRe);
+        } else {
+            audioRe.pause();
+            playPauseBtnIconRe.className = 'fas fa-play';
+            isPlayingRe = false;
+            cancelAnimationFrame(rafIdRe);
+        }
+    });
+
+    function drawWaveformRe() {
+        ctxRe.clearRect(0, 0, canvasRe.width, canvasRe.height);
+        historyRe.forEach((heightRe, iRe) => {
+            const xRe = iRe * (columnWidthRe + spaceBetweenColumnsRe);
+            const yRe = (canvasRe.height / 2) - (heightRe / 2);
+            ctxRe.fillStyle = barColorRe;
+            ctxRe.fillRect(xRe, yRe, columnWidthRe, heightRe);
+        });
+
+        const currentTimeRe = audioRe.currentTime;
+        const currentColumnRe = Math.floor((currentTimeRe / audioDurationRe) * totalColumnsRe);
+        const newAmplitudeRe = historyRe[currentColumnRe] + 10; 
+        historyRe[currentColumnRe] = newAmplitudeRe; 
+
+        if (isPlayingRe) {
+            rafIdRe = requestAnimationFrame(drawWaveformRe);
+        }
+    }
+</script>
+</body>
+</html>
